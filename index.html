@@ -300,7 +300,7 @@ const BRAND_SHEET_NAME = {
   "TIV": "V4 Cookware",
 };
 
-const SLOT_ID   = '1GQ7a1DLtbK_UbTVgR8suZlPXxGp0qcMKKF-nQ9hjNxM';
+const SLOT_ID   = '1YxOfpANOXj2BWYcaSU3isNKmKQxBn-cfTEpYIQ6T4PY';
 const ORDER_ID  = '1ZNp63Rli_OP5UP10oyISGl7gx4IDClEv2XWB-b5EJKo';
 
 let currentBrand = null;
@@ -381,7 +381,10 @@ async function loadOrders() {
   }
   try {
     // Fetch only 4 needed columns to reduce payload size
-    const order = await fetchSheet(ORDER_ID, 'Sheet1', 'C:J');
+    const orderRes = await fetch('https://docs.google.com/spreadsheets/d/e/2PACX-1vQUy37amumO7KMo37DzUyn6ufDFbW7l7cBIGUFfJKTeGMc5w6nuPBtMewQD_qc3BfM4wnX9Y8EUfzVN/pub?gid=2138911050&single=true&output=csv');
+    const orderTxt = await orderRes.text();
+    const orderParsed = parseCSV(orderTxt);
+    const order = { cols: orderParsed[0].map(h=>h.trim()), rows: orderParsed.slice(1).filter(r=>r.some(c=>(c||'').trim())) };
     orderHeaders = order.cols;
     // Filter to orders from 1 March 2026 onwards
     const cutoff = 20260301;
@@ -421,7 +424,7 @@ async function fetchSheet(sheetId, tabName, range) {
 let dataLoaded = false;
 
 async function loadData() {
-  if (dataLoaded && brandRows.length) { renderAll(); return; }
+  // Always reload fresh data for each brand login
   document.getElementById('loadingState').style.display = 'block';
   document.getElementById('dashContent').innerHTML = '';
 
@@ -432,10 +435,14 @@ async function loadData() {
 
   try {
     // Fetch slot sheet via gviz JSON
-    const slot  = await fetchSheet(SLOT_ID, 'Overall', 'A:Q');
+    const slot  = await fetchSheet(SLOT_ID, 'Live_AMay', 'A:Q');
     headers     = slot.cols;
     const sheetName = BRAND_SHEET_NAME[currentBrand] || currentBrand;
-    brandRows   = slot.rows.filter(r => v(r,'Brand').toLowerCase() === sheetName.toLowerCase());
+    // Debug: show first 3 rows raw
+    window._slotDebug = slot.rows.slice(0,3).map(r => r.join(' | ')).join('\n');
+    window._slotHeaders = slot.cols.join(' | ');
+    window._sheetName = sheetName;
+    brandRows   = slot.rows.filter(r => (r[7]||'').trim().toLowerCase() === sheetName.toLowerCase());
 
     // Orders loaded lazily when Payments tab is clicked
     orderHeaders = []; orderRows = [];
@@ -447,8 +454,15 @@ async function loadData() {
       document.getElementById('dashContent').innerHTML = `<div class="empty-state"><p>No campaign data found for <strong>${currentBrand}</strong>.</p></div>`;
       return;
     }
+    document.getElementById('dashContent').innerHTML = `<div style="background:#fff8ee;border:1px solid #e8d8b0;border-radius:10px;padding:12px;font-size:0.62rem;word-break:break-all;margin-bottom:12px;">
+      <b>Looking for:</b> ${window._sheetName}<br>
+      <b>Brand rows found:</b> ${brandRows.length}<br>
+      <b>Headers:</b> ${window._slotHeaders}<br>
+      <b>Row 1:</b> ${(window._slotDebug||'').split('\n')[0]}<br>
+      <b>Row 2:</b> ${(window._slotDebug||'').split('\n')[1]}
+    </div>`;
     renderAll();
-    loadOrders(); // load orders in background immediately
+    loadOrders();
   } catch(e) {
     clearTimeout(hardTimeout);
     document.getElementById('loadingState').style.display = 'none';
@@ -471,11 +485,12 @@ function parseCSV(text) {
 
 // Order sheet — fixed indices for fetched columns C,G,H,J = 0,1,2,3
 // Col 0 = Order date (C), Col 1 = Product Code (G), Col 2 = Brand (H), Col 3 = Order Amount (J)
-// C=0:date, D=1, E=2, F=3, G=4:code, H=5:brand, I=6, J=7:amount
-function ov_date(row){ return (row[0]||'').trim(); }
-function ov_code(row){ return (row[4]||'').trim(); }
-function ov_brand(row){ return (row[5]||'').trim(); }
-function ov_amt(row){ return parseFloat((row[7]||'').toString().replace(/[^0-9.-]/g,''))||0; }
+// Order sheet — name based lookup from CSV headers
+function oIdx(name){ return orderHeaders.findIndex(h => h.toLowerCase().includes(name.toLowerCase())); }
+function ov_date(row){ const i=oIdx('order date'); return i!==-1?(row[i]||'').trim():''; }
+function ov_code(row){ const i=oIdx('product code'); return i!==-1?(row[i]||'').trim():''; }
+function ov_brand(row){ const i=oIdx('brand'); return i!==-1?(row[i]||'').trim():''; }
+function ov_amt(row){ const i=oIdx('total order'); return i!==-1?parseFloat((row[i]||'').toString().replace(/[^0-9.\-]/g,''))||0:0; }
 
 // Parse date string to comparable number YYYYMMDD
 function parseDate(str) {
@@ -549,10 +564,10 @@ function calcRefund(refundAmtStr, orderAmt, slotsDone) {
 // Get matched orders for a slot row
 function getOrderStats(slotRow) {
   const sheetName    = (BRAND_SHEET_NAME[currentBrand] || currentBrand).toLowerCase();
-  const code         = v(slotRow, 'Code').toLowerCase().trim();
-  const slotDate     = parseDate(v(slotRow, 'Date'));
-  const refundAmtStr = (slotRow[14]||'').trim() || v(slotRow, 'Refund Amt');
-  const slotsDone    = n(slotRow, 'Slots done');
+  const code         = (slotRow[2]||'').trim().toLowerCase();
+  const slotDate     = parseDate((slotRow[6]||'').trim());
+  const refundAmtStr = (slotRow[12]||'').trim();
+  const slotsDone    = parseFloat((slotRow[3]||'').replace(/[^0-9.-]/g,''))||0;
 
   const matched = orderRows.filter(r => {
     const oBrand = ov_brand(r).toLowerCase().trim();
@@ -576,13 +591,13 @@ let selMonths = new Set();
 
 function renderDashboard() {
   // Get all unique months from brandRows
-  const allDates = brandRows.map(r => v(r,'Date')).filter(Boolean);
+  const allDates = brandRows.map(r => (r[6]||'').trim()).filter(Boolean);
   const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
   // Auto-select months that have actual data
   if (selMonths.size === 0) {
     brandRows.forEach(r => {
-      const mo = getMonth(v(r,'Date'));
+      const mo = getMonth((r[6]||'').trim());
       if (mo !== -1) selMonths.add(mo);
     });
   }
@@ -630,15 +645,15 @@ function updateDashKpis() {
   const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   // Filter brandRows by selected months
   const filtered = brandRows.filter(r => {
-    const mo = getMonth(v(r,'Date'));
+    const mo = getMonth((r[6]||'').trim());
     return mo !== -1 && selMonths.has(mo);
   });
 
-  const totalSlots = filtered.reduce((s,r)=>s+n(r,'Slots'),0);
-  const slotsDone  = filtered.reduce((s,r)=>s+n(r,'Slots done'),0);
-  const slotsLeft  = filtered.reduce((s,r)=>s+n(r,'Slots Left'),0);
+  const totalSlots = filtered.reduce((s,r)=>s+(parseFloat((r[10]||'').replace(/[^0-9.-]/g,''))||0),0);
+  const slotsDone  = filtered.reduce((s,r)=>s+(parseFloat((r[3]||'').replace(/[^0-9.-]/g,''))||0),0);
+  const slotsLeft  = filtered.reduce((s,r)=>s+(parseFloat((r[4]||'').replace(/[^0-9.-]/g,''))||0),0);
   const investment = filtered.reduce((s,r)=>s + getOrderStats(r).totalRefundAmt, 0);
-  const campaigns  = [...new Set(filtered.map(r=>v(r,'Code')).filter(Boolean))].length;
+  const campaigns  = [...new Set(filtered.map(r=>(r[2]||'').trim()).filter(Boolean))].length;
   const pct        = totalSlots>0?Math.round(slotsDone/totalSlots*100):0;
 
   const selLabel = selMonths.size===0?'No month selected':
@@ -684,7 +699,7 @@ function renderDateDrill(filtered) {
   // Group by date
   const byDate = {};
   filtered.forEach(r => {
-    const d = v(r,'Date');
+    const d = (r[6]||'').trim();
     if (!d) return;
     if (!byDate[d]) byDate[d] = [];
     byDate[d].push(r);
@@ -697,10 +712,10 @@ function renderDateDrill(filtered) {
     <div style="background:#fff;border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:20px;">
       ${dates.map(d => {
         const rows = byDate[d];
-        const slots = rows.reduce((s,r)=>s+n(r,'Slots'),0);
-        const done  = rows.reduce((s,r)=>s+n(r,'Slots done'),0);
+        const slots = rows.reduce((s,r)=>s+(parseFloat((r[10]||'').replace(/[^0-9.-]/g,''))||0),0);
+        const done  = rows.reduce((s,r)=>s+(parseFloat((r[3]||'').replace(/[^0-9.-]/g,''))||0),0);
         const inv   = rows.reduce((s,r)=>s + getOrderStats(r).totalRefundAmt, 0);
-        const camps = [...new Set(rows.map(r=>v(r,'Code')).filter(Boolean))].length;
+        const camps = [...new Set(rows.map(r=>(r[2]||'').trim()).filter(Boolean))].length;
         return `<details style="border-bottom:1px solid var(--border);">
           <summary style="padding:14px 16px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;list-style:none;">
             <div>
@@ -711,15 +726,15 @@ function renderDateDrill(filtered) {
           </summary>
           <div style="padding:0 16px 14px;">
             ${rows.map(r => {
-              const rdone = n(r,'Slots done'), rtotal = n(r,'Slots'), rpct = rtotal>0?Math.round(rdone/rtotal*100):0;
+              const rdone = (parseFloat((r[3]||'').replace(/[^0-9.-]/g,''))||0), rtotal = (parseFloat((r[10]||'').replace(/[^0-9.-]/g,''))||0), rpct = rtotal>0?Math.round(rdone/rtotal*100):0;
               const rinv = getOrderStats(r).totalRefundAmt;
-              const link = v(r,'Link to order')||v(r,'Brand Link');
+              const link = (r[8]||'').trim()||(r[11]||'').trim();
               return `<div style="background:#faf7f2;border-radius:10px;padding:10px 12px;margin-top:8px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-                  <span style="background:linear-gradient(135deg,#1c1812,#2e2416);color:var(--gold-light);border-radius:6px;padding:2px 8px;font-size:0.65rem;font-weight:700;">${v(r,'Code')||'-'}</span>
+                  <span style="background:linear-gradient(135deg,#1c1812,#2e2416);color:var(--gold-light);border-radius:6px;padding:2px 8px;font-size:0.65rem;font-weight:700;">${(r[2]||'').trim()||'-'}</span>
                   <span style="font-size:0.62rem;color:var(--muted);">${rpct}% done</span>
                 </div>
-                <div style="font-size:0.78rem;font-weight:500;margin-bottom:6px;">${link?`<a href="${link}" target="_blank" style="color:var(--gold);text-decoration:underline;">${v(r,'Product Name')||'-'}</a>`:v(r,'Product Name')||'-'}</div>
+                <div style="font-size:0.78rem;font-weight:500;margin-bottom:6px;">${link?`<a href="${link}" target="_blank" style="color:var(--gold);text-decoration:underline;">${(r[9]||'').trim()||'-'}</a>`:(r[9]||'').trim()||'-'}</div>
                 <div style="height:4px;background:#e8dcc8;border-radius:99px;margin-bottom:6px;"><div style="height:100%;width:${rpct}%;background:linear-gradient(90deg,var(--gold),var(--gold-light));border-radius:99px;"></div></div>
                 <div style="display:flex;justify-content:space-between;font-size:0.65rem;color:var(--muted);">
                   <span>${rdone}/${rtotal} orders</span>
@@ -736,10 +751,10 @@ function renderDateDrill(filtered) {
 
 
 function renderAll() {
-  const codes = [...new Set(brandRows.map(r=>v(r,'Code')).filter(Boolean))];
-  const totalSlots   = brandRows.reduce((s,r)=>s+n(r,'Slots'),0);
-  const slotsDone    = brandRows.reduce((s,r)=>s+n(r,'Slots done'),0);
-  const slotsLeft    = brandRows.reduce((s,r)=>s+n(r,'Slots Left'),0);
+  const codes = [...new Set(brandRows.map(r=>(r[2]||'').trim()).filter(Boolean))];
+  const totalSlots   = brandRows.reduce((s,r)=>s+(parseFloat((r[10]||'').replace(/[^0-9.-]/g,''))||0),0);
+  const slotsDone    = brandRows.reduce((s,r)=>s+(parseFloat((r[3]||'').replace(/[^0-9.-]/g,''))||0),0);
+  const slotsLeft    = brandRows.reduce((s,r)=>s+(parseFloat((r[4]||'').replace(/[^0-9.-]/g,''))||0),0);
   const totalLess    = brandRows.reduce((s,r)=>s + getOrderStats(r).totalRefundAmt, 0);
   const pct          = totalSlots>0?Math.round(slotsDone/totalSlots*100):0;
 
@@ -750,18 +765,18 @@ function renderAll() {
   document.getElementById('campContent').innerHTML = `
     <p class="section-title" style="margin-top:4px;">Campaign <span>Breakdown</span></p>
     ${[...brandRows].sort((a,b) => parseDate(v(b,'Date')) - parseDate(v(a,'Date'))).map(r => {
-      const total=n(r,'Slots'), done=n(r,'Slots done'), left=n(r,'Slots Left');
+      const total=(parseFloat((r[10]||'').replace(/[^0-9.-]/g,''))||0), done=(parseFloat((r[3]||'').replace(/[^0-9.-]/g,''))||0), left=(parseFloat((r[4]||'').replace(/[^0-9.-]/g,''))||0);
       const pct2=total>0?Math.round(done/total*100):0;
-      const link=v(r,'Link to order')||v(r,'Brand Link');
+      const link=(r[8]||'').trim()||(r[11]||'').trim();
       const sc=left<=0?'badge-closed':left<total*0.3?'badge-pending':'badge-open';
       const st=left<=0?'Full':left<total*0.3?'Low':'Open';
       return `<div class="camp-card">
         <div class="camp-card-header">
           <div style="flex:1;">
-            <div class="camp-name">${link?`<a href="${link}" target="_blank">${v(r,'Product Name')||'-'}</a>`:(v(r,'Product Name')||'-')}</div>
-            <div class="camp-date">${v(r,'Date')||''}</div>
+            <div class="camp-name">${link?`<a href="${link}" target="_blank">${(r[9]||'').trim()||'-'}</a>`:((r[9]||'').trim()||'-')}</div>
+            <div class="camp-date">${(r[6]||'').trim()||''}</div>
           </div>
-          <span class="camp-code">${v(r,'Code')||'-'}</span>
+          <span class="camp-code">${(r[2]||'').trim()||'-'}</span>
         </div>
         <div class="camp-progress-wrap">
           <div class="camp-progress-bar"><div class="camp-progress-fill" style="width:${pct2}%"></div></div>
@@ -791,11 +806,11 @@ function renderPayments() {
     const { totalOrderAmt, totalRefundAmt, orderCount, refundAmtStr } = getOrderStats(r);
     grandOrderAmt  += totalOrderAmt;
     grandRefundAmt += totalRefundAmt;
-    const slots = n(r,'Slots'), done = n(r,'Slots done');
+    const slots = (parseFloat((r[10]||'').replace(/[^0-9.-]/g,''))||0), done = (parseFloat((r[3]||'').replace(/[^0-9.-]/g,''))||0);
     return `<div class="pay-card">
       <div class="pay-card-title">
-        <span class="camp-code" style="font-size:0.65rem;">${v(r,'Code')||'-'}</span>
-        <span style="font-size:0.9rem;">${v(r,'Product Name')||'-'}</span>
+        <span class="camp-code" style="font-size:0.65rem;">${(r[2]||'').trim()||'-'}</span>
+        <span style="font-size:0.9rem;">${(r[9]||'').trim()||'-'}</span>
       </div>
       <div class="pay-row"><span class="pay-row-lbl">Orders Matched</span><span class="pay-row-val">${orderCount}</span></div>
       <div class="pay-row"><span class="pay-row-lbl">Total Order Amount</span><span class="pay-row-val">₹${totalOrderAmt.toLocaleString('en-IN')}</span></div>
@@ -837,9 +852,9 @@ function renderROI() {
     <p style="font-size:0.72rem;color:var(--muted);margin-bottom:16px;">Investment · Rating Impact</p>
     ${brandRows.map(r => {
       const { totalRefundAmt } = getOrderStats(r);
-      const slots = n(r,'Slots');
-      const _ir = parseFloat((r[12]||'').toString().replace(/[^0-9.-]/g,''))||0;
-      const _cr = parseFloat((r[15]||'').toString().replace(/[^0-9.-]/g,''))||0;
+      const slots = (parseFloat((r[10]||'').replace(/[^0-9.-]/g,''))||0);
+      const _ir = parseFloat(''.replace(/[^0-9.-]/g,''))||0;
+      const _cr = parseFloat(''.replace(/[^0-9.-]/g,''))||0;
       const initialRating = _ir > 10 ? _ir/10 : _ir;
       const currentRating = _cr > 10 ? _cr/10 : _cr;
       const ratingLift = currentRating > 0 ? (currentRating - initialRating).toFixed(1) : null;
@@ -847,8 +862,8 @@ function renderROI() {
       const liftColor = ratingLift > 0 ? 'var(--green)' : ratingLift < 0 ? 'var(--red)' : 'var(--muted)';
       return `<div class="roi-card">
         <div class="roi-card-header">
-          <span class="roi-code-badge">${v(r,'Code')||'-'}</span>
-          <span style="font-size:0.85rem;font-weight:500;color:var(--dark);">${v(r,'Product Name')||'-'}</span>
+          <span class="roi-code-badge">${(r[2]||'').trim()||'-'}</span>
+          <span style="font-size:0.85rem;font-weight:500;color:var(--dark);">${(r[9]||'').trim()||'-'}</span>
         </div>
         <div class="roi-grid">
           <div class="roi-item" style="grid-column:1/-1;">
@@ -893,13 +908,13 @@ function renderRatings() {
       const currentRating = _cr2 > 10 ? _cr2/10 : _cr2;
       const reviews = v(r,'No Of Reviews');
       const lift = currentRating > 0 ? (currentRating - initialRating).toFixed(1) : null;
-      const link = v(r,'Link to order')||v(r,'Brand Link');
+      const link = (r[8]||'').trim()||(r[11]||'').trim();
       const liftColor = lift > 0 ? 'var(--green)' : lift < 0 ? 'var(--red)' : 'var(--muted)';
       const isNewLaunch = !initialRating && currentRating > 0;
       return `<div class="rating-card">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-          <span class="roi-code-badge">${v(r,'Code')||'-'}</span>
-          <span style="font-size:0.88rem;font-weight:500;">${link?`<a href="${link}" target="_blank" style="color:var(--gold);text-decoration:underline;">${v(r,'Product Name')||'-'}</a>`:v(r,'Product Name')||'-'}</span>
+          <span class="roi-code-badge">${(r[2]||'').trim()||'-'}</span>
+          <span style="font-size:0.88rem;font-weight:500;">${link?`<a href="${link}" target="_blank" style="color:var(--gold);text-decoration:underline;">${(r[9]||'').trim()||'-'}</a>`:(r[9]||'').trim()||'-'}</span>
         </div>
         <div class="rating-divider"></div>
         <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;margin-top:12px;">
